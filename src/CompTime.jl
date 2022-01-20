@@ -7,17 +7,20 @@ Here's an example.
 ```julia
 struct SVector{T,n}
   v::Vector{T}
-  function SVector{T}(v::Vector{T}) where {T}
+  function SVector(v::Vector{T}) where {T}
     new{T,length(v)}(v)
   end
   function SVector{T,n}(v::Vector{T}) where {T,n}
     assert(n == length(v))
     new{T,n}(v)
   end
+  function SVector{T,n}() where {T,n}
+    new{T,n}(Vector{T}(undef,n))
+  end
 end
 
 @comptime_gen function add(v1::SVector{T,n}, v2::SVector{T,n}) where {T,n}
-  vout = SVector{(@ct T), (@ct n)}(Vector{@ct T}(undef, @ct n))
+  vout = SVector{(@ct T), (@ct n)}()
   @ct for i in 1:n
     vout[@ct i] = v1[@ct i] + v2[@ct i]
   end
@@ -38,18 +41,65 @@ This should be equivalent to the following code
   code
 end
 ```
+
+The beauty of this is that we can also extract a function definition that
+is not @generated, by simply removing all uses of @ct
+
+This is supported with a comptime_gen block
+
+@comptime_gen begin
+  function add(v1::Vector{T}, v2::Vector{T}) where {T}
+    n = length(v1)
+    @assert n == length(v2)
+    @runtime
+  end
+
+  add(v1::SVector{T,n}, v2::SVector{T,n}) where {T,n} = @comptime
+
+  @def begin
+    vout = SVector{(@ct T), (@ct n)}(Vector{@ct T}(undef, @ct n))
+    @ct for i in 1:n
+        vout[@ct i] = v1[@ct i] + v2[@ct i]
+    end
+    vout
+  end
+end
 """
 module CompTime
 export make_comptime, make_comptime_body, expand_ct, @comptime_gen
 
 using MLStyle
-using MacroTools: splitdef, combinedef, @capture, postwalk
+using MacroTools: splitdef, combinedef, @capture, postwalk, prewalk
 
-macro comptime_gen(def)
-  parts = splitdef(def)
-  parts[:body] = make_comptime_body(parts[:body])
-  esc(combinedef(parts))
+macro comptime_gen(def::Expr)
+  if def.head == :function
+    parts = splitdef(def)
+    parts[:body] = make_comptime_body(parts[:body])
+    esc(combinedef(parts))
+  elseif def.head == :block
+    body = nothing
+    for line in def.args
+      @capture(line, @def body_)
+    end
+    if isnothing(body)
+      error("@comptime_gen block must include a @def block")
+    end
+    comptime_body = make_comptime_body(body)
+    runtime_body = make_runtime_body(body)
+    esc(postwalk(def) do expr
+      @capture(expr, @def b_) && return nothing
+      @capture(expr, @comptime) && return comptime_body
+      @capture(expr, @runtime) && return runtime_body
+      expr
+    end)
+  end
 end
+
+# Simply remove all calls to @ct
+function make_runtime_body(body)
+  prewalk(x -> @capture(x, @ct e_) ? e : x, body)
+end
+
 
 function make_comptime_body(body)
   code_var = gensym("code")

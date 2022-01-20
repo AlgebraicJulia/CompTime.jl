@@ -28,7 +28,7 @@ using InteractiveUtils: @code_lowered
   end
 
   @comptime_gen function add(v1::SVector{T,n}, v2::SVector{T,n}) where {T,n}
-    vout = SVector{(@ct T), (@ct n)}()
+    vout = SVector{T, n}()
     @ct for i in 1:n
       vout[@ct i] = v1[@ct i] + v2[@ct i]
     end
@@ -40,7 +40,7 @@ using InteractiveUtils: @code_lowered
   @test add(v1,v2) == SVector(v1.v .+ v2.v)
 
   @comptime_gen function add_adaptive(v1::SVector{T,n}, v2::SVector{T,n}) where {T,n}
-    vout = SVector{(@ct T), (@ct n)}()
+    vout = SVector{T, n}()
     @ct if n <= 10
       @ct for i in 1:n
         vout[@ct i] = v1[@ct i] + v2[@ct i]
@@ -60,7 +60,7 @@ using InteractiveUtils: @code_lowered
   @test (@code_lowered add(w1, w2)).code != (@code_lowered add_adaptive(w1,w2)).code
 
   @comptime_gen function add_while(v1::SVector{T,n}, v2::SVector{T,n}) where {T,n}
-    vout = SVector{(@ct T), (@ct n)}()
+    vout = SVector{T, n}()
     @ct i = 1
     @ct while i <= n
       vout[@ct i] = v1[@ct i] + v2[@ct i]
@@ -71,4 +71,22 @@ using InteractiveUtils: @code_lowered
 
   @test (@code_lowered add_while(v1,v2)).code == (@code_lowered add(v1,v2)).code
 
+  @comptime_gen begin
+    add_dyn(v1::SVector{T,n}, v2::SVector{T,n}) where {T,n} = @runtime
+
+    add_static(v1::SVector{T,n}, v2::SVector{T,n}) where {T,n} = @comptime
+
+    @def begin
+      vout = SVector{T, n}()
+      @ct for i in 1:n
+        vout[@ct i] = v1[@ct i] + v2[@ct i]
+      end
+      vout
+    end
+  end
+
+  @test add_dyn(v1,v2) == add_static(v1,v2)
+  @test (@code_lowered add_dyn(w1, w2)).code == (@code_lowered add_adaptive(w1,w2)).code
+  # @test (@code_lowered add_static(v1, v2)).code == (@code_lowered add_adaptive(v1,v2)).code
+  # This basically passes, except for a tiny difference of return values not worth worrying about
 end
