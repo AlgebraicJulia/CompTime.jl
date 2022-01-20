@@ -3,6 +3,10 @@ uuid = "0fb5dd42-039a-4ca4-a1d7-89a96eae6d39"
 authors = ["Owen Lynch <root@owenlynch.org> and contributors"]
 version = "0.1.0"
 
+[deps]
+MLStyle = "d8e11817-5142-5d16-987a-aa16d5891078"
+MacroTools = "1914dd2f-81c6-5fcd-8719-6d5c9610ff09"
+
 [compat]
 julia = "1.7"
 
