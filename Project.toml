@@ -1,0 +1,13 @@
+name = "CompTime"
+uuid = "0fb5dd42-039a-4ca4-a1d7-89a96eae6d39"
+authors = ["Owen Lynch <root@owenlynch.org> and contributors"]
+version = "0.1.0"
+
+[compat]
+julia = "1.7"
+
+[extras]
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[targets]
+test = ["Test"]
