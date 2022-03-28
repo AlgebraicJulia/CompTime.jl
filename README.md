@@ -18,7 +18,7 @@ The core feature of CompTime is the ability to write functions that optionally h
 
 The central tenet of CompTime is that this *does not* allow you to write anything that you would not otherwise be able to write, from a semantics perspective. However, having a function partially evaluated at compile time may enable functions that would normally not be type checkable to be type checked, so from a type-checking standpoint this is a win, and of course having a function partially evaluated at compile time enables all sorts of other speedups.
 
-Every function declared with `@comptime_enable` can be used in three modes.
+Every function declared with `@ct_enable` can be used in three modes.
 2. Compile-time mode. This compiles the function specially for the compile-time arguments to the function, and then runs the function. Under the hood, this uses `@generated` functions, and passes in all of the compile-time parameters as types, so this compilation is cached just like a normal `@generated` function, as long as all of the compile-time parameters can be resolved using constant-propagation.
 1. Run-time mode. This does no compile-time computation, and just runs the function as if all of the macros from CompTime.jl were not there.
 3. Syntax mode. This outputs the syntax that *would* be compiled for arguments of a certain type. This is very useful for debugging.
