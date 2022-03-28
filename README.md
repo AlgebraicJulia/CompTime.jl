@@ -44,7 +44,7 @@ end
 ```
 
 Then we can write the following function to unroll a for-loop to add two static vectors.
-```
+```julia
 @ct_enable function add(v1::SVector{T,n}, v2::SVector{T,n}) where {T,n}
   vout = SVector{(@ct T), (@ct n)}()
   @ct_ctrl for i in 1:n
