@@ -1,155 +1,227 @@
-raw"""
-The goal of this library is to allow for a simplified style of writing
-@generated functions, inspired by zig comptime features.
-
-Here's an example.
-
-```julia
-struct SVector{T,n}
-  v::Vector{T}
-  function SVector(v::Vector{T}) where {T}
-    new{T,length(v)}(v)
-  end
-  function SVector{T,n}(v::Vector{T}) where {T,n}
-    assert(n == length(v))
-    new{T,n}(v)
-  end
-  function SVector{T,n}() where {T,n}
-    new{T,n}(Vector{T}(undef,n))
-  end
-end
-
-@comptime_gen function add(v1::SVector{T,n}, v2::SVector{T,n}) where {T,n}
-  vout = SVector{(@ct T), (@ct n)}()
-  @ct for i in 1:n
-    vout[@ct i] = v1[@ct i] + v2[@ct i]
-  end
-  vout
-end
-```
-
-This should be equivalent to the following code
-
-```julia
-@generated function add(v1::SVector{T,n}, v2::SVector{T,n}) where {T,n}
-  code = Expr(:block)
-  push!(code.args, :(vout = SVector{$T}(Vector{$T}(undef, $n))))
-  for i in 1:n
-    push!(code.args, :(vout[$i] = v1[$i] + v2[$i]))
-  end
-  push!(code.args, :(vout))
-  code
-end
-```
-
-The beauty of this is that we can also extract a function definition that
-is not @generated, by simply removing all uses of @ct
-
-This is supported with a comptime_gen block
-
-@comptime_gen begin
-  function add(v1::Vector{T}, v2::Vector{T}) where {T}
-    n = length(v1)
-    @assert n == length(v2)
-    @runtime
-  end
-
-  add(v1::SVector{T,n}, v2::SVector{T,n}) where {T,n} = @comptime
-
-  @def begin
-    vout = SVector{(@ct T), (@ct n)}(Vector{@ct T}(undef, @ct n))
-    @ct for i in 1:n
-        vout[@ct i] = v1[@ct i] + v2[@ct i]
-    end
-    vout
-  end
-end
-"""
 module CompTime
-export make_comptime, make_comptime_body, expand_ct, @comptime_gen
+export @ct_enable, runtime, comptime, generate_code, debug
+
+"""
+Notes:
+
+Currently does not work with kwargs. These are tricky to handle correctly, so as a proof of concept, we do not handle them.
+"""
 
 using MLStyle
 using MacroTools: splitdef, combinedef, @capture, postwalk, prewalk
 
-macro comptime_gen(def::Expr)
-  if def.head == :function
+function runtime end
+function comptime end
+function generate_code end
+
+function debug(fn, args...)
+  generate_code(fn, map(typeof, args)...)
+end
+
+macro ct_enable(def::Expr)
+  @assert def.head == :function
+  parts = FunctionParts(def)
+  esc(quote
+    $(make_apply_def(parts))
+
+    $(make_generate_code_def(parts))
+
+    $(make_comptime_def(parts))
+
+    $(make_runtime_def(parts))
+  end)
+end
+
+struct FunctionParts
+  name::Any
+  args::Vector{Expr}
+  whereparams::Any
+  body::Any
+  function FunctionParts(def::Expr)
     parts = splitdef(def)
-    parts[:body] = make_comptime_body(parts[:body])
-    esc(combinedef(parts))
-  elseif def.head == :block
-    body = nothing
-    for line in def.args
-      @capture(line, @def body_)
-    end
-    if isnothing(body)
-      error("@comptime_gen block must include a @def block")
-    end
-    comptime_body = make_comptime_body(body)
-    runtime_body = make_runtime_body(body)
-    esc(postwalk(def) do expr
-      @capture(expr, @def b_) && return nothing
-      @capture(expr, @comptime) && return comptime_body
-      @capture(expr, @runtime) && return runtime_body
-      expr
-    end)
+    @assert parts[:kwargs] == []
+    new(parts[:name], normalize_args(parts[:args]), parts[:whereparams], parts[:body])
+  end
+  function FunctionParts(name, args, whereparams, body)
+    new(name, args, whereparams, body)
   end
 end
 
-# Simply remove all calls to @ct
-function make_runtime_body(body)
-  prewalk(x -> @capture(x, @ct e_) ? e : x, body)
-end
-
-
-function make_comptime_body(body)
-  code_var = gensym("code")
-  code = Expr(:block, :($code_var = Expr(:block)))
-  @capture(body, begin lines__ end) || error("body should be a block of code")
-  for line in lines
-    push!(code.args, make_comptime(line, code_var))
-  end
-  push!(code.args, :($code_var))
-  quote
-    if $(Expr(:generated))
-      $code
-    else
-      $(Expr(:meta, :generated_only))
-      return
+function arg_names(parts::FunctionParts)
+  map(parts.args) do arg
+    @match arg begin
+      Expr(:(::), name, _) => name
     end
   end
 end
 
-function make_comptime(line, code_var)
-  @match line begin
-    Expr(:macrocall, mname, _, control_structure) && if mname == Symbol("@ct") end =>
-      @match control_structure begin
-        Expr(:for, head, body) =>
-          Expr(:for, head, make_comptime(body, code_var))
-        Expr(:if, cond, thenpart, elsepart) =>
-          Expr(:if, cond, make_comptime(thenpart, code_var), make_comptime_else(elsepart, code_var))
-        Expr(:while, cond, body) =>
-          Expr(:while, cond, make_comptime(body, code_var))
-        # except for the special control structures, we just let it happen at compile time
-        _ => control_structure
+function arg_types(parts::FunctionParts)
+  map(parts.args) do arg
+    @match arg begin
+      Expr(:(::), _, type) => type
+    end
+  end
+end
+
+function make_function(parts::FunctionParts)
+  combinedef(Dict(
+    :name=>parts.name,
+    :args=>parts.args,
+    :whereparams=>parts.whereparams,
+    :body=>parts.body,
+    :kwargs=>[]
+  ))
+end
+
+function normalize_args(args::Vector)
+  map(args) do arg
+    @match arg begin
+      Expr(:(::), name, type) => Expr(:(::), name, type)
+      Expr(:(::), type) => Expr(:(::), gensym(), type)
+      name::Symbol => Expr(:(::), name, Any)
+      _ => error("unsupported argument format $arg")
+    end
+  end
+end
+
+function make_runtime_def(parts::FunctionParts)
+  make_function(FunctionParts(
+    GlobalRef(CompTime, :runtime),
+    [Expr(:(::), Expr(:call, typeof, parts.name)), parts.args...],
+    parts.whereparams,
+    postwalk(strip_ct_macros, parts.body)
+  ))
+end
+
+function make_comptime_def(parts::FunctionParts)
+  make_function(FunctionParts(
+    GlobalRef(CompTime, :comptime),
+    [Expr(:(::), Expr(:call, typeof, parts.name)), parts.args...],
+    parts.whereparams,
+    quote
+      if $(Expr(:generated))
+        $(generate_code)($(parts.name), $(arg_types(parts)...))
+      else
+        $(Expr(:meta, :generated_only))
+        return
       end
-    Expr(:block, lines...) =>
-        Expr(:block, make_comptime.([lines...], Ref(code_var))...)
-    expr => :(push!($code_var.args, $(Expr(:quote, expand_ct(expr)))))
+    end
+  ))
+end
+
+function make_generate_code_def(parts::FunctionParts)
+  type_args = map(arg_types(parts)) do type
+    Expr(:(::), Expr(:curly, Type, type))
+  end
+
+  make_function(FunctionParts(
+    GlobalRef(CompTime, :generate_code),
+    [Expr(:(::), Expr(:call, typeof, parts.name)), type_args...],
+    parts.whereparams,
+    comptime_expr(parts.body)
+  ))
+end
+
+function make_apply_def(parts::FunctionParts)
+  make_function(FunctionParts(
+    parts.name,
+    parts.args,
+    parts.whereparams,
+    Expr(:call, comptime, parts.name, arg_names(parts)...)
+  ))
+end
+
+function comptime_loop(mkloop, body)
+  lines = gensym("lines")
+  mkbody = comptime_expr(body)
+  quote
+    $lines = []
+    $(mkloop(:(push!($lines, $mkbody))))
+    Expr(:block, $lines...)
   end
 end
 
-function make_comptime_else(elsepart, code_var)
+function comptime_if(parts)
+  branches = normalize_if(parts...)
+  (cond, thenpart) = branches[1]
+  rest = branches[2:end]
+  Expr(:if, cond, comptime_expr(thenpart), comptime_else(rest))
+end
+
+function comptime_else(branches)
+  if length(branches) > 0
+    (cond, thenpart) = branches[1]
+    Expr(:elseif, cond, comptime_expr(thenpart), comptime_else(branches[2:end]))
+  else
+    nothing
+  end
+end
+
+function normalize_if(cond, thenpart)
+  [(cond, thenpart)]
+end
+
+function normalize_if(cond, thenpart, elsepart)
+  [(cond, thenpart), normalize_else(elsepart)...]
+end
+
+function normalize_else(elsepart)
   @match elsepart begin
-    Expr(:elseif, cond, then) =>
-      Expr(:elseif, cond, make_comptime(then, code_var))
-    Expr(:elseif, cond, then, more_else) =>
-      Expr(:elseif, cond, make_comptime(then, code_var), make_comptime_else(more_else, code_var))
-    _ => make_comptime(elsepart, code_var)
+    Expr(:elseif, cond, thenpart) =>
+      [(cond, thenpart)]
+    Expr(:elseif, cond, thenpart, moreelse) =>
+      [(cond, thenpart), normalize_else(moreelse)...]
+    _ => [(true, elsepart)]
   end
 end
 
-function expand_ct(expr)
-  postwalk(x -> @capture(x, @ct e_) ? Expr(:$, e) : x, expr)
+q(s::Symbol) = Expr(:quote, s)
+q(e::Expr) = Expr(:quote, e)
+q(x) = x
+
+function ct_control(expr)
+  generator = @match expr begin
+    Expr(:for, head, body) =>
+      comptime_loop(gen -> Expr(:for, head, gen), body)
+    Expr(:if, parts...) =>
+      comptime_if(parts)
+    Expr(:while, cond, body) =>
+      comptime_loop(gen -> Expr(:while, cond, gen), body)
+    _ => error("unsupported control structure $expr")
+  end
+  Expr(:$, generator)
+end
+
+function expand_ct_macros(expr)
+  @match expr begin
+    Expr(:macrocall, mname, _, e) =>
+      if mname == Symbol("@ct")
+        Expr(:$, Expr(:call, q, e))
+      elseif mname == Symbol("@ct_ctrl")
+        ct_control(e)
+      else
+        expr
+      end
+    _ => expr
+  end
+end
+
+function strip_ct_macros(expr)
+  @match expr begin
+    Expr(:macrocall, mname, _, e) =>
+      if mname == Symbol("@ct")
+        e
+      elseif mname == Symbol("@ct_ctrl")
+        e
+      else
+        expr
+      end
+    _ => expr
+  end
+end
+
+function comptime_expr(expr)
+  Expr(:quote, postwalk(expand_ct_macros, expr))
 end
 
 end
