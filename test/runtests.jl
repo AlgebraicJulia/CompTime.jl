@@ -1,6 +1,5 @@
 using CompTime
 using Test
-using InteractiveUtils: @code_lowered
 
 @testset "CompTime.jl" begin
   struct SVector{T,n}
