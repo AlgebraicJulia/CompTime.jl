@@ -15,22 +15,53 @@ function comptime end
 function generate_code end
 
 function debug(fn, args...)
-  generate_code(fn, map(typeof, args)...)
+  specific_typeof(x) = x isa DataType ? Type{x} : typeof(x)
+
+  generate_code(fn, map(specific_typeof, args)...)
 end
 
 macro ct_enable(def::Expr)
-  @assert def.head == :function
-  parts = FunctionParts(def)
-  esc(quote
-    $(make_apply_def(parts))
-
-    $(make_generate_code_def(parts))
-
-    $(make_comptime_def(parts))
-
-    $(make_runtime_def(parts))
-  end)
+  @assert def.head == :function || def.head == :(=)
+  ct_parts = comptime_parts(def)
+  rt_parts = runtime_parts(def)
+  esc(
+    Expr(
+      :block,
+      __source__,
+      make_apply_def(ct_parts),
+      __source__,
+      make_generate_code_def(ct_parts),
+      __source__,
+      make_comptime_def(ct_parts),
+      __source__,
+      make_runtime_def(rt_parts),
+  ))
 end
+
+function runtime_parts(def::Expr)
+  FunctionParts(postwalk(strip_ct_macros, def))
+end
+
+function comptime_parts(def::Expr)
+  parts = splitdef(def)
+  extra_whereparams = []
+  parts[:args] = map(parts[:args]) do arg
+    @match arg begin
+      Expr(:macrocall, mname, _, e) =>
+        if mname == Symbol("@ct")
+          name = normalize_arg(e).args[1]
+          push!(extra_whereparams, name)
+          Expr(:(::), Expr(:curly, Type, Expr(:curly, Val, name)))
+        else
+          arg
+        end
+      _ => arg
+    end
+  end
+  parts[:whereparams] = Tuple(append!([parts[:whereparams]...], extra_whereparams))
+  FunctionParts(parts[:name], normalize_arg.(parts[:args]), parts[:whereparams], parts[:body])
+end
+
 
 struct FunctionParts
   name::Any
@@ -40,7 +71,7 @@ struct FunctionParts
   function FunctionParts(def::Expr)
     parts = splitdef(def)
     @assert parts[:kwargs] == []
-    new(parts[:name], normalize_args(parts[:args]), parts[:whereparams], parts[:body])
+    new(parts[:name], normalize_arg.(parts[:args]), parts[:whereparams], parts[:body])
   end
   function FunctionParts(name, args, whereparams, body)
     new(name, args, whereparams, body)
@@ -73,14 +104,12 @@ function make_function(parts::FunctionParts)
   ))
 end
 
-function normalize_args(args::Vector)
-  map(args) do arg
-    @match arg begin
-      Expr(:(::), name, type) => Expr(:(::), name, type)
-      Expr(:(::), type) => Expr(:(::), gensym(), type)
-      name::Symbol => Expr(:(::), name, Any)
-      _ => error("unsupported argument format $arg")
-    end
+function normalize_arg(arg)
+  @match arg begin
+    Expr(:(::), name, type) => Expr(:(::), name, type)
+    Expr(:(::), type) => Expr(:(::), gensym(), type)
+    name::Symbol => Expr(:(::), name, Any)
+    _ => error("unsupported argument format $arg")
   end
 end
 
@@ -111,7 +140,7 @@ end
 
 function make_generate_code_def(parts::FunctionParts)
   type_args = map(arg_types(parts)) do type
-    Expr(:(::), Expr(:curly, Type, type))
+    Expr(:(::), Expr(:curly, Type, Expr(:(<:), type)))
   end
 
   make_function(FunctionParts(
@@ -175,6 +204,10 @@ function normalize_else(elsepart)
   end
 end
 
+function comptime_generator(body, generator)
+  Expr(:(...), Expr(:generator, comptime_expr(body), generator))
+end
+
 q(s::Symbol) = Expr(:quote, s)
 q(e::Expr) = Expr(:quote, e)
 q(x) = x
@@ -187,6 +220,8 @@ function ct_control(expr)
       comptime_if(parts)
     Expr(:while, cond, body) =>
       comptime_loop(gen -> Expr(:while, cond, gen), body)
+    Expr(:(...), Expr(:generator, body, generator)) =>
+      comptime_generator(body, generator)
     _ => error("unsupported control structure $expr")
   end
   Expr(:$, generator)

@@ -2,7 +2,8 @@ using CompTime
 using Test
 
 @testset "CompTime.jl" begin
-  struct SVector{T,n}
+
+  struct SVector{T,n} <: AbstractVector{T}
     v::Vector{T}
     function SVector(v::Vector{T}) where {T}
       new{T,length(v)}(v)
@@ -12,6 +13,9 @@ using Test
       new{T,n}(v)
     end
     function SVector{T,n}() where {T,n}
+      SVector{T,n}(undef, n)
+    end
+    function SVector{T,n}(::UndefInitializer, ::Int) where {T,n}
       new{T,n}(Vector{T}(undef, n))
     end
   end
@@ -26,18 +30,24 @@ using Test
     v1.v == v2.v
   end
 
-  @ct_enable function add(v1::SVector{T,n}, v2::SVector{T,n}) where {T,n}
-    vout = SVector{T, n}()
+  @ct_enable function add(v1::AbstractVector{T}, v2::AbstractVector{T}, @ct(n)) where {T}
+    vout = typeof(v1)(undef, n)
     @ct_ctrl for i in 1:n
       vout[@ct i] = v1[@ct i] + v2[@ct i]
     end
     vout
   end
 
+  add(v1::SVector{T,n},v2::SVector{T,n}) where {T,n} = add(v1, v2, Val{n})
+
+  function add(v1::Vector{T}, v2::Vector{T}) where {T}
+    @assert length(v1) == length(v2)
+    runtime(add, v1, v2, length(v1))
+  end
+
   v1 = SVector([2,3,4])
   v2 = SVector([5,6,7])
-  @test add(v1,v2) == SVector(v1.v .+ v2.v)
-  @test add(v1,v2) == runtime(add, v1, v2)
+  @test add(v1,v2) == SVector(add(v1.v, v2.v))
 
   @ct_enable function add_adaptive(v1::SVector{T,n}, v2::SVector{T,n}) where {T,n}
     vout = SVector{T, n}()
