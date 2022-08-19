@@ -20,8 +20,13 @@ function debug(fn, args...)
   generate_code(fn, map(specific_typeof, args)...)
 end
 
-macro ct_enable(def::Expr)
-  @assert def.head == :function || def.head == :(=)
+macro ct_enable(args...)
+  is_optional, def = @match args begin
+    (:(optional=$(b::Bool)), def::Expr) && if def.head == :function end => (b, def)
+    (def::Expr,) && if def.head == :function end => (true, def)
+    _ => error("Invalid arguments $args")
+  end
+  @assert def.head == :function
   ct_parts = comptime_parts(def)
   rt_parts = runtime_parts(def)
   esc(
@@ -32,7 +37,7 @@ macro ct_enable(def::Expr)
       __source__,
       make_generate_code_def(ct_parts),
       __source__,
-      make_comptime_def(ct_parts),
+      make_comptime_def(ct_parts, is_optional),
       __source__,
       make_runtime_def(rt_parts),
   ))
@@ -122,7 +127,8 @@ function make_runtime_def(parts::FunctionParts)
   ))
 end
 
-function make_comptime_def(parts::FunctionParts)
+function make_comptime_def(parts::FunctionParts, is_optional)
+  
   make_function(FunctionParts(
     GlobalRef(CompTime, :comptime),
     [Expr(:(::), Expr(:call, typeof, parts.name)), parts.args...],
@@ -131,8 +137,7 @@ function make_comptime_def(parts::FunctionParts)
       if $(Expr(:generated))
         $(generate_code)($(parts.name), $(arg_types(parts)...))
       else
-        $(Expr(:meta, :generated_only))
-        return
+        $(is_optional ? :($(runtime)($(parts.name), $(arg_names(parts)...))) : Expr(:meta, :generated_only))
       end
     end
   ))

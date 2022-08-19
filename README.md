@@ -75,8 +75,12 @@ function generate_code(::typeof(add), ::Type{SVector{T,n}}, ::Type{SVector{T,n}}
   )
 end
 
-@generated function comptime(::typeof(add), v1::SVector{T,n}, v2::SVector{T,n}) where {T,n}
-  generate_code(add, SVector{T,n}, SVector{T,n})
+function comptime(::typeof(add), v1::SVector{T,n}, v2::SVector{T,n}) where {T,n}
+  if @generated
+      generate_code(add, SVector{T,n}, SVector{T,n})
+  else
+      runtime(add, v1, v2)
+  end
 end
 
 function runtime(::typeof(add), v1::SVector{T,n}, v2::SVector{T,n}) where {T,n}
@@ -87,4 +91,14 @@ function runtime(::typeof(add), v1::SVector{T,n}, v2::SVector{T,n}) where {T,n}
   vout
 end
 ```
-
+Note that the above is an [**optionally** generated function](https://docs.julialang.org/en/v1/manual/metaprogramming/#Optionally-generated-functions), so the compiler is allowed to choose to use the runtime version in dynamic circumstances. If you do not wish to allow the compiler to make this choice, then instead write
+```julia
+@ct_enable optional=false function add(v1::SVector{T,n}, v2::SVector{T,n}) where {T,n}
+  vout = SVector{(@ct T), (@ct n)}()
+  @ct_ctrl for i in 1:n
+    vout[@ct i] = v1[@ct i] + v2[@ct i]
+  end
+  vout
+end
+```
+which will create a non-optional generated function. 
