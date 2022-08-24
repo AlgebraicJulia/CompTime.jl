@@ -23,7 +23,7 @@ end
 macro ct_enable(args...)
   is_optional, def = @match args begin
     (:(optional=$(b::Bool)), def::Expr) && if def.head == :function end => (b, def)
-    (def::Expr,) && if def.head == :function end => (true, def)
+    (def::Expr,) && if def.head == :function end => (false, def)
     _ => error("Invalid arguments $args")
   end
   @assert def.head == :function

@@ -1,7 +1,7 @@
 name = "CompTime"
 uuid = "0fb5dd42-039a-4ca4-a1d7-89a96eae6d39"
 authors = ["Owen Lynch <root@owenlynch.org> and contributors"]
-version = "0.1.1"
+version = "0.1.2"
 
 [deps]
 MLStyle = "d8e11817-5142-5d16-987a-aa16d5891078"
