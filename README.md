@@ -75,12 +75,8 @@ function generate_code(::typeof(add), ::Type{SVector{T,n}}, ::Type{SVector{T,n}}
   )
 end
 
-function comptime(::typeof(add), v1::SVector{T,n}, v2::SVector{T,n}) where {T,n}
-  if @generated
-      generate_code(add, SVector{T,n}, SVector{T,n})
-  else
-      runtime(add, v1, v2)
-  end
+@generated function comptime(::typeof(add), v1::SVector{T,n}, v2::SVector{T,n}) where {T,n}
+    generate_code(add, SVector{T,n}, SVector{T,n})
 end
 
 function runtime(::typeof(add), v1::SVector{T,n}, v2::SVector{T,n}) where {T,n}
@@ -91,9 +87,10 @@ function runtime(::typeof(add), v1::SVector{T,n}, v2::SVector{T,n}) where {T,n}
   vout
 end
 ```
-Note that the above is an [**optionally** generated function](https://docs.julialang.org/en/v1/manual/metaprogramming/#Optionally-generated-functions), so the compiler is allowed to choose to use the runtime version in dynamic circumstances. If you do not wish to allow the compiler to make this choice, then instead write
+
+If you want the compiler to have the freedom to decide whether to use the runtime or comptime version (e.g. this can be advantageous in the presence of type instabilities or when running code in a debugger), you can add `optional=true` to make an [**optionally** generated function](https://docs.julialang.org/en/v1/manual/metaprogramming/#Optionally-generated-functions). In our example, this would look like
 ```julia
-@ct_enable optional=false function add(v1::SVector{T,n}, v2::SVector{T,n}) where {T,n}
+@ct_enable optional=true function add(v1::SVector{T,n}, v2::SVector{T,n}) where {T,n}
   vout = SVector{(@ct T), (@ct n)}()
   @ct_ctrl for i in 1:n
     vout[@ct i] = v1[@ct i] + v2[@ct i]
@@ -101,4 +98,3 @@ Note that the above is an [**optionally** generated function](https://docs.julia
   vout
 end
 ```
-which will create a non-optional generated function. 
